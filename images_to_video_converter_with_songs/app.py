@@ -10,7 +10,7 @@ import time
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-here'
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max for cloud deployment
 
 UPLOAD_FOLDER = 'uploads'
 VIDEOS_FOLDER = 'videos'
@@ -90,9 +90,9 @@ def upload_files():
                 image_path = os.path.join(UPLOAD_FOLDER, filename)
                 image.save(image_path)
                 
-                # Resize image to standard size
+                # Resize image to optimized size
                 img = Image.open(image_path)
-                img = img.resize((1080, 1920), Image.Resampling.LANCZOS)
+                img = img.resize((720, 1280), Image.Resampling.LANCZOS)
                 img.save(image_path)
                 image_paths.append(image_path)
         
@@ -126,188 +126,89 @@ def upload_files():
         return jsonify({'error': f'Error creating video: {str(e)}'}), 500
 
 def apply_effect(img, effect, frame_num, total_frames):
-    """Apply visual effects to image"""
+    """Apply lightweight visual effects optimized for cloud deployment"""
     try:
         h, w = img.shape[:2]
         progress = frame_num / max(total_frames, 1)
         
         if effect == 'zoom_glow':
-            # Zoom with pulsing glow
-            scale = 1.0 + (progress * 0.15) + np.sin(frame_num * 0.3) * 0.02
-            angle = progress * 3 + np.sin(frame_num * 0.2) * 2
+            # Simple zoom with glow
+            scale = 1.0 + (progress * 0.1)
             center = (w // 2, h // 2)
-            
-            M = cv2.getRotationMatrix2D(center, angle, scale)
+            M = cv2.getRotationMatrix2D(center, 0, scale)
             result = cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REFLECT)
             
-            # Add glow effect
-            blurred = cv2.GaussianBlur(result, (15, 15), 0)
-            glow_intensity = 0.2 + 0.3 * abs(np.sin(frame_num * 0.4))
-            result = cv2.addWeighted(result, 1.0, blurred, glow_intensity, 0)
-            
-            # Add particles
-            overlay = result.copy()
-            for i in range(15):
-                seed = (frame_num + i * 17) % 1000
-                np.random.seed(seed)
-                x = int((np.sin(seed * 0.01 + frame_num * 0.1) * 0.5 + 0.5) * w)
-                y = int((np.cos(seed * 0.013 + frame_num * 0.08) * 0.5 + 0.5) * h)
-                x = max(5, min(x, w-5))
-                y = max(5, min(y, h-5))
-                size = max(1, int(3 + np.sin(frame_num * 0.2 + i) * 2))
-                cv2.circle(overlay, (x, y), size, (255, 255, 255), -1)
-            
-            return cv2.addWeighted(result, 0.85, overlay, 0.15, 0)
+            # Lightweight glow
+            blurred = cv2.GaussianBlur(result, (9, 9), 0)
+            return cv2.addWeighted(result, 0.8, blurred, 0.2, 0)
         
         elif effect == 'pan_zoom_particles':
-            # Ken Burns with particles
-            scale = 1.0 + (progress * 0.25)
-            pan_x = int(progress * 60 - 30 + np.sin(frame_num * 0.1) * 10)
-            pan_y = int(progress * 40 - 20 + np.cos(frame_num * 0.12) * 8)
+            # Simple pan zoom
+            scale = 1.0 + (progress * 0.15)
+            pan_x = int(progress * 30 - 15)
+            pan_y = int(progress * 20 - 10)
             
-            new_w, new_h = max(w, int(w * scale)), max(h, int(h * scale))
-            if new_w > w or new_h > h:
+            new_w, new_h = int(w * scale), int(h * scale)
+            if new_w > w and new_h > h:
                 resized = cv2.resize(img, (new_w, new_h))
                 start_x = max(0, min((new_w - w) // 2 + pan_x, new_w - w))
                 start_y = max(0, min((new_h - h) // 2 + pan_y, new_h - h))
-                result = resized[start_y:start_y + h, start_x:start_x + w]
-            else:
-                result = img.copy()
-            
-            # Add light rays
-            overlay = np.zeros_like(result)
-            for i in range(3):
-                angle = frame_num * 2 + i * 60
-                start_x = max(0, min(int(w * 0.1 + np.sin(np.radians(angle)) * w * 0.3), w-1))
-                start_y = max(0, min(int(h * 0.1 + np.cos(np.radians(angle)) * h * 0.3), h-1))
-                end_x = max(0, min(int(w * 0.9 - np.sin(np.radians(angle)) * w * 0.2), w-1))
-                end_y = max(0, min(int(h * 0.9 - np.cos(np.radians(angle)) * h * 0.2), h-1))
-                cv2.line(overlay, (start_x, start_y), (end_x, end_y), (50, 50, 100), 2)
-            
-            overlay = cv2.GaussianBlur(overlay, (21, 21), 0)
-            return cv2.addWeighted(result, 0.9, overlay, 0.1, 0)
+                return resized[start_y:start_y + h, start_x:start_x + w]
+            return img
         
         elif effect == 'parallax_glow':
-            # Parallax with edge glow
-            shift_x = int(np.sin(progress * np.pi * 3 + frame_num * 0.1) * 25)
-            shift_y = int(np.cos(progress * np.pi * 2 + frame_num * 0.08) * 15)
+            # Simple parallax
+            shift_x = int(np.sin(progress * np.pi * 2) * 15)
+            shift_y = int(np.cos(progress * np.pi * 2) * 8)
             
             M = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
-            result = cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REFLECT)
-            
-            # Add edge glow
-            gray = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
-            edges = cv2.Canny(gray, 50, 150)
-            edges = cv2.dilate(edges, np.ones((3,3)), iterations=1)
-            edges = cv2.GaussianBlur(edges, (7, 7), 0)
-            edges_colored = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-            
-            return cv2.addWeighted(result, 0.85, edges_colored, 0.15, 0)
+            return cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REFLECT)
         
         elif effect == 'zoom_out_sparkle':
-            # Zoom out with sparkles
-            scale = max(0.5, 1.3 - (progress * 0.3))
-            rotation = np.sin(frame_num * 0.1) * 3
-            center = (w // 2, h // 2)
-            
-            M = cv2.getRotationMatrix2D(center, rotation, scale)
-            result = cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REFLECT)
-            
-            # Add sparkles
-            overlay = np.zeros_like(result)
-            for i in range(20):
-                seed = (frame_num + i * 23) % 500
-                np.random.seed(seed)
-                x = np.random.randint(5, w-5)
-                y = np.random.randint(5, h-5)
-                if np.random.random() > 0.7:
-                    sparkle_size = np.random.randint(1, 4)
-                    intensity = np.random.randint(150, 255)
-                    cv2.circle(overlay, (x, y), sparkle_size, (intensity, intensity, intensity), -1)
-            
-            overlay = cv2.GaussianBlur(overlay, (3, 3), 0)
-            return cv2.addWeighted(result, 0.9, overlay, 0.1, 0)
-        
-        elif effect == 'motion_blur_glow':
-            # Motion blur with glow
-            blur_amount = max(1, int(25 * (1 - progress)))
-            if blur_amount > 1:
-                kernel_size = min(blur_amount, 15)
-                kernel = np.zeros((kernel_size, kernel_size))
-                kernel[kernel_size//2, :] = 1.0 / kernel_size
-                result = cv2.filter2D(img, -1, kernel)
-            else:
-                result = img.copy()
-            
-            # Add glow
-            glow_intensity = max(0, 0.4 * (1 - progress))
-            if glow_intensity > 0:
-                blurred = cv2.GaussianBlur(result, (15, 15), 0)
-                result = cv2.addWeighted(result, 1.0, blurred, glow_intensity, 0)
-            
-            return result
-        
-        elif effect == 'cinematic_flare':
-            # Cinematic with lens flares
-            alpha = 0.3 + (progress * 0.7)
-            beta = max(0, int(30 * (1 - progress)))
-            result = cv2.convertScaleAbs(img, alpha=alpha, beta=beta)
-            
-            # Add lens flares
-            overlay = np.zeros_like(result)
-            flare_x = max(30, min(int(w * (0.2 + progress * 0.6)), w-30))
-            flare_y = max(30, min(int(h * (0.3 + np.sin(frame_num * 0.1) * 0.2)), h-30))
-            
-            cv2.circle(overlay, (flare_x, flare_y), 30, (100, 150, 255), -1)
-            cv2.circle(overlay, (flare_x, flare_y), 50, (50, 100, 200), 2)
-            
-            overlay = cv2.GaussianBlur(overlay, (21, 21), 0)
-            return cv2.addWeighted(result, 0.8, overlay, 0.2, 0)
-        
-        elif effect == 'wave_distortion':
-            # Wave distortion
-            wave_strength = 5 + 3 * abs(np.sin(frame_num * 0.2))
-            result = img.copy()
-            
-            for y in range(0, h, 2):
-                offset = int(wave_strength * np.sin(2 * np.pi * y / 50 + frame_num * 0.3))
-                if offset != 0:
-                    M = np.float32([[1, 0, offset], [0, 1, 0]])
-                    result[y:min(y+2, h)] = cv2.warpAffine(result[y:min(y+2, h)], M, (w, min(2, h-y)), borderMode=cv2.BORDER_REFLECT)
-            
-            return result
-        
-        elif effect == 'hologram':
-            # Hologram effect
-            result = img.copy()
-            
-            # Add scan lines
-            for y in range(0, h, 4):
-                if (y + frame_num) % 8 < 4:
-                    result[y:min(y+2, h), :] = result[y:min(y+2, h), :] * 0.7
-            
-            # Add hologram tint
-            tint = np.zeros_like(result)
-            tint[:,:,1] = 50  # Green tint
-            tint[:,:,0] = 30  # Blue tint
-            
-            return cv2.addWeighted(result, 0.8, tint, 0.2, 0)
-        
-        # Fallback effects
-        elif effect == 'zoom':
-            scale = 1.0 + (progress * 0.15)
+            # Simple zoom out
+            scale = max(0.7, 1.2 - (progress * 0.2))
             center = (w // 2, h // 2)
             M = cv2.getRotationMatrix2D(center, 0, scale)
             return cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REFLECT)
         
-        elif effect == 'pan_zoom':
-            scale = 1.0 + (progress * 0.2)
-            new_w, new_h = int(w * scale), int(h * scale)
-            if new_w > w and new_h > h:
-                resized = cv2.resize(img, (new_w, new_h))
-                start_x = (new_w - w) // 2
-                start_y = (new_h - h) // 2
-                return resized[start_y:start_y + h, start_x:start_x + w]
+        elif effect == 'motion_blur_glow':
+            # Simple blur
+            blur_amount = max(1, int(15 * (1 - progress)))
+            if blur_amount > 1:
+                kernel_size = min(blur_amount, 9)
+                return cv2.GaussianBlur(img, (kernel_size, kernel_size), 0)
+            return img
+        
+        elif effect == 'cinematic_flare':
+            # Simple brightness
+            alpha = 0.4 + (progress * 0.6)
+            return cv2.convertScaleAbs(img, alpha=alpha, beta=0)
+        
+        elif effect == 'wave_distortion':
+            # Simple wave
+            result = img.copy()
+            wave_strength = 3
+            for y in range(0, h, 4):
+                offset = int(wave_strength * np.sin(2 * np.pi * y / 40 + frame_num * 0.2))
+                if offset != 0:
+                    M = np.float32([[1, 0, offset], [0, 1, 0]])
+                    result[y:min(y+4, h)] = cv2.warpAffine(result[y:min(y+4, h)], M, (w, min(4, h-y)), borderMode=cv2.BORDER_REFLECT)
+            return result
+        
+        elif effect == 'hologram':
+            # Simple hologram
+            result = img.copy()
+            for y in range(0, h, 6):
+                if (y + frame_num) % 12 < 6:
+                    result[y:min(y+3, h), :] = result[y:min(y+3, h), :] * 0.8
+            return result
+        
+        # Basic fallback effects
+        elif effect == 'zoom':
+            scale = 1.0 + (progress * 0.1)
+            center = (w // 2, h // 2)
+            M = cv2.getRotationMatrix2D(center, 0, scale)
+            return cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REFLECT)
         
         return img
         
@@ -319,10 +220,10 @@ def create_video(image_paths, output_path, duration_per_image, transition, effec
     try:
         import time
         
-        # Video settings
-        fps = 30
-        width, height = 1080, 1920
-        frames_per_image = int(fps * duration_per_image)
+        # Optimized video settings for cloud deployment
+        fps = 24  # Reduced FPS
+        width, height = 720, 1280  # Reduced resolution
+        frames_per_image = max(12, int(fps * duration_per_image))  # Minimum frames
         
         # Use H.264 codec for better compatibility
         fourcc = cv2.VideoWriter_fourcc(*'H264')
