@@ -40,20 +40,43 @@ def upload_files():
         effect = request.form.get('effect', 'none')
         music_url = request.form.get('music_url', '')
         
-        # Download music from URL if provided
+        # Handle music from URL if provided
+        audio_path = None
         if music_url and not audio:
             try:
                 import urllib.request
-                import time
-                music_filename = f"downloaded_music_{int(time.time())}.wav"
-                audio_path = os.path.join(MUSIC_FOLDER, music_filename)
-                urllib.request.urlretrieve(music_url, audio_path)
+                import urllib.parse
                 
-                # Verify the file was downloaded
-                if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
+                # Parse URL to get file extension
+                parsed_url = urllib.parse.urlparse(music_url)
+                file_ext = os.path.splitext(parsed_url.path)[1] or '.mp3'
+                
+                music_filename = f"downloaded_music_{int(time.time())}{file_ext}"
+                audio_path = os.path.join(MUSIC_FOLDER, music_filename)
+                
+                # Add headers to avoid blocking
+                req = urllib.request.Request(
+                    music_url,
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
+                )
+                
+                with urllib.request.urlopen(req, timeout=30) as response:
+                    with open(audio_path, 'wb') as f:
+                        f.write(response.read())
+                
+                # Verify the file was downloaded and has content
+                if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 1000:
+                    if os.path.exists(audio_path):
+                        os.remove(audio_path)
                     audio_path = None
+                    print(f"Downloaded file too small or empty")
+                    
             except Exception as e:
                 print(f"Music download failed: {e}")
+                if audio_path and os.path.exists(audio_path):
+                    os.remove(audio_path)
                 audio_path = None
         
         if not images or len(images) < 2:
@@ -73,9 +96,8 @@ def upload_files():
                 img.save(image_path)
                 image_paths.append(image_path)
         
-        # Save audio if provided
-        audio_path = None
-        if audio and allowed_file(audio.filename, ALLOWED_AUDIO_EXTENSIONS):
+        # Save uploaded audio if provided (and no URL audio)
+        if not audio_path and audio and allowed_file(audio.filename, ALLOWED_AUDIO_EXTENSIONS):
             audio_filename = secure_filename(audio.filename)
             audio_path = os.path.join(MUSIC_FOLDER, audio_filename)
             audio.save(audio_path)
@@ -105,32 +127,90 @@ def upload_files():
 
 def apply_effect(img, effect, frame_num, total_frames):
     """Apply visual effects to image"""
+    h, w = img.shape[:2]
+    progress = frame_num / total_frames
+    
     if effect == 'zoom':
-        # Zoom in effect
-        progress = frame_num / total_frames
-        scale = 1.0 + (progress * 0.1)  # Zoom from 1.0 to 1.1
-        h, w = img.shape[:2]
-        center_x, center_y = w // 2, h // 2
-        new_w, new_h = int(w * scale), int(h * scale)
+        # Enhanced zoom with slight rotation for more dynamic feel
+        scale = 1.0 + (progress * 0.15)  # Zoom from 1.0 to 1.15
+        angle = progress * 2  # Slight rotation
+        center = (w // 2, h // 2)
         
-        # Resize and crop to center
+        # Create transformation matrix
+        M = cv2.getRotationMatrix2D(center, angle, scale)
+        return cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REFLECT)
+    
+    elif effect == 'pan_zoom':
+        # Ken Burns effect - pan and zoom
+        scale = 1.0 + (progress * 0.2)
+        pan_x = int(progress * 50 - 25)  # Pan horizontally
+        pan_y = int(progress * 30 - 15)  # Pan vertically
+        
+        new_w, new_h = int(w * scale), int(h * scale)
         resized = cv2.resize(img, (new_w, new_h))
-        start_x = (new_w - w) // 2
-        start_y = (new_h - h) // 2
+        
+        start_x = max(0, (new_w - w) // 2 + pan_x)
+        start_y = max(0, (new_h - h) // 2 + pan_y)
+        
+        # Ensure we don't go out of bounds
+        start_x = min(start_x, new_w - w)
+        start_y = min(start_y, new_h - h)
+        
         return resized[start_y:start_y + h, start_x:start_x + w]
     
+    elif effect == 'parallax':
+        # Parallax scrolling effect
+        shift_x = int(np.sin(progress * np.pi * 2) * 20)
+        shift_y = int(np.cos(progress * np.pi * 2) * 10)
+        
+        M = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
+        return cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REFLECT)
+    
+    elif effect == 'zoom_out':
+        # Zoom out effect
+        scale = 1.2 - (progress * 0.2)  # Zoom from 1.2 to 1.0
+        center = (w // 2, h // 2)
+        M = cv2.getRotationMatrix2D(center, 0, scale)
+        return cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REFLECT)
+    
     elif effect == 'blur_focus':
-        # Blur to focus effect
-        progress = frame_num / total_frames
-        blur_amount = int(15 * (1 - progress))  # Start blurred, become sharp
+        # Enhanced blur to focus with motion blur
+        blur_amount = int(20 * (1 - progress))
         if blur_amount > 0:
-            return cv2.GaussianBlur(img, (blur_amount * 2 + 1, blur_amount * 2 + 1), 0)
+            # Add motion blur for more realistic effect
+            kernel = np.zeros((blur_amount, blur_amount))
+            kernel[int((blur_amount-1)/2), :] = np.ones(blur_amount)
+            kernel = kernel / blur_amount
+            blurred = cv2.filter2D(img, -1, kernel)
+            return cv2.GaussianBlur(blurred, (blur_amount * 2 + 1, blur_amount * 2 + 1), 0)
     
     elif effect == 'brightness':
-        # Brightness fade in
-        progress = frame_num / total_frames
-        brightness = int(255 * progress)
-        return cv2.convertScaleAbs(img, alpha=progress, beta=brightness * 0.1)
+        # Enhanced brightness with color temperature shift
+        alpha = 0.3 + (progress * 0.7)  # Brightness from 30% to 100%
+        beta = int(20 * (1 - progress))  # Color shift
+        result = cv2.convertScaleAbs(img, alpha=alpha, beta=beta)
+        
+        # Add warm color tint that fades
+        if progress < 0.5:
+            warm_tint = np.zeros_like(img)
+            warm_tint[:, :, 0] = 20  # Blue channel
+            warm_tint[:, :, 2] = 40  # Red channel
+            tint_strength = (0.5 - progress) * 2
+            result = cv2.addWeighted(result, 1 - tint_strength * 0.3, warm_tint, tint_strength * 0.3, 0)
+        
+        return result
+    
+    elif effect == 'slide_reveal':
+        # Slide reveal effect
+        reveal_width = int(w * progress)
+        mask = np.zeros((h, w), dtype=np.uint8)
+        mask[:, :reveal_width] = 255
+        
+        # Apply gaussian blur to mask for smooth transition
+        mask = cv2.GaussianBlur(mask, (21, 21), 0)
+        mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR) / 255.0
+        
+        return (img * mask).astype(np.uint8)
     
     return img
 
@@ -167,45 +247,106 @@ def create_video(image_paths, output_path, duration_per_image, transition, effec
             for frame in range(frames_per_image):
                 current_img = img.copy()
                 
-                # Apply visual effects
+                # Apply visual effects with subtle motion
                 if effect != 'none':
                     current_img = apply_effect(current_img, effect, frame, frames_per_image)
+                    
+                    # Add subtle camera shake for more realism (only for certain effects)
+                    if effect in ['parallax', 'zoom', 'pan_zoom'] and frame % 3 == 0:
+                        shake_x = int(np.random.normal(0, 0.5))
+                        shake_y = int(np.random.normal(0, 0.3))
+                        if abs(shake_x) > 0 or abs(shake_y) > 0:
+                            M = np.float32([[1, 0, shake_x], [0, 1, shake_y]])
+                            current_img = cv2.warpAffine(current_img, M, (width, height), borderMode=cv2.BORDER_REFLECT)
                 
-                # Apply transitions
+                # Apply enhanced transitions
                 if transition == 'fade':
-                    if i == 0 and frame < 15:  # Fade in first image
-                        alpha = frame / 15
+                    if i == 0 and frame < 20:  # Fade in first image
+                        alpha = (frame / 20) ** 0.5  # Ease-in curve
                         current_img = cv2.convertScaleAbs(current_img, alpha=alpha, beta=0)
-                    elif i == len(image_paths) - 1 and frame > frames_per_image - 15:  # Fade out last image
-                        alpha = (frames_per_image - frame) / 15
+                    elif i == len(image_paths) - 1 and frame > frames_per_image - 20:  # Fade out last image
+                        alpha = ((frames_per_image - frame) / 20) ** 0.5  # Ease-out curve
                         current_img = cv2.convertScaleAbs(current_img, alpha=alpha, beta=0)
                 
                 elif transition == 'slide':
-                    if frame < 10:  # Slide in effect
-                        shift = int((10 - frame) * width / 10)
+                    if frame < 15:  # Enhanced slide in effect
+                        progress = frame / 15
+                        # Ease-out animation curve
+                        eased_progress = 1 - (1 - progress) ** 3
+                        shift = int((1 - eased_progress) * width)
                         M = np.float32([[1, 0, shift], [0, 1, 0]])
-                        current_img = cv2.warpAffine(current_img, M, (width, height))
+                        current_img = cv2.warpAffine(current_img, M, (width, height), borderMode=cv2.BORDER_REFLECT)
+                
+                elif transition == 'crossfade':
+                    # Cross-fade between images
+                    if i > 0 and frame < 20:
+                        # Load previous image for crossfade
+                        prev_img = cv2.imread(image_paths[i-1])
+                        if prev_img is not None:
+                            prev_img = cv2.resize(prev_img, (width, height))
+                            alpha = frame / 20
+                            current_img = cv2.addWeighted(prev_img, 1-alpha, current_img, alpha, 0)
                 
                 video_writer.write(current_img)
         
         video_writer.release()
         
-        # Add audio using ffmpeg with proper encoding
+        # Add audio using ffmpeg with enhanced encoding
         if audio_path and os.path.exists(audio_path):
             # Check if ffmpeg is available
-            if shutil.which('ffmpeg'):
-                # Use ffmpeg to combine video and audio with proper codecs
-                cmd = f'ffmpeg -i "{temp_output}" -i "{audio_path}" -c:v libx264 -c:a aac -strict experimental -b:a 192k -shortest "{output_path}" -y'
-                result = os.system(cmd)
-                
-                # Clean up temp file
-                if os.path.exists(temp_output):
-                    os.remove(temp_output)
+            ffmpeg_path = shutil.which('ffmpeg')
+            if ffmpeg_path:
+                try:
+                    # Calculate video duration for audio looping
+                    total_duration = len(image_paths) * duration_per_image
                     
-                if result == 0 and os.path.exists(output_path):
-                    return True
+                    # Enhanced ffmpeg command with better audio handling
+                    cmd = [
+                        'ffmpeg', '-y',
+                        '-i', temp_output,
+                        '-stream_loop', '-1',  # Loop audio if needed
+                        '-i', audio_path,
+                        '-c:v', 'libx264',
+                        '-preset', 'medium',
+                        '-crf', '23',
+                        '-c:a', 'aac',
+                        '-b:a', '128k',
+                        '-ar', '44100',
+                        '-ac', '2',
+                        '-t', str(total_duration),  # Match video duration
+                        '-shortest',
+                        '-movflags', '+faststart',  # Web optimization
+                        output_path
+                    ]
+                    
+                    import subprocess
+                    result = subprocess.run(cmd, capture_output=True, text=True)
+                    
+                    # Clean up temp file
+                    if os.path.exists(temp_output):
+                        os.remove(temp_output)
+                    
+                    # Clean up downloaded audio if it was from URL
+                    if 'downloaded_music_' in audio_path and os.path.exists(audio_path):
+                        os.remove(audio_path)
+                        
+                    if result.returncode == 0 and os.path.exists(output_path):
+                        return True
+                    else:
+                        print(f"FFmpeg error: {result.stderr}")
+                        # Fallback: just use video without audio
+                        if os.path.exists(temp_output):
+                            os.rename(temp_output, output_path)
+                        return os.path.exists(output_path)
+                        
+                except Exception as e:
+                    print(f"FFmpeg processing error: {e}")
+                    # Fallback: just use video without audio
+                    if os.path.exists(temp_output):
+                        os.rename(temp_output, output_path)
+                    return os.path.exists(output_path)
             else:
-                # If no ffmpeg, just rename the video file
+                print("FFmpeg not found, creating video without audio")
                 os.rename(temp_output, output_path)
                 return True
         else:
@@ -258,16 +399,15 @@ def preview_video(filename):
 def search_music():
     query = request.args.get('q', 'trending')
     
-    # Using Freesound API for real music (you need to get API key from freesound.org)
-    # For demo, using sample tracks - replace with real API
+    # Using royalty-free music sources
     sample_tracks = [
         {
             'id': 1,
             'name': 'Upbeat Summer Vibes',
             'artist': 'AudioLibrary',
             'duration': 30,
-            'url': 'https://www.soundjay.com/misc/sounds/bell-ringing-05.wav',
-            'preview_url': 'https://www.soundjay.com/misc/sounds/bell-ringing-05.wav',
+            'url': 'https://www.bensound.com/bensound-music/bensound-ukulele.mp3',
+            'preview_url': 'https://www.bensound.com/bensound-music/bensound-ukulele.mp3',
             'genre': 'Pop'
         },
         {
@@ -275,8 +415,8 @@ def search_music():
             'name': 'Chill Lo-Fi Beat',
             'artist': 'BeatsLibrary',
             'duration': 30,
-            'url': 'https://www.soundjay.com/misc/sounds/bell-ringing-04.wav',
-            'preview_url': 'https://www.soundjay.com/misc/sounds/bell-ringing-04.wav',
+            'url': 'https://www.bensound.com/bensound-music/bensound-relaxing.mp3',
+            'preview_url': 'https://www.bensound.com/bensound-music/bensound-relaxing.mp3',
             'genre': 'Lo-Fi'
         },
         {
@@ -284,8 +424,8 @@ def search_music():
             'name': 'Electronic Dance',
             'artist': 'EDMBeats',
             'duration': 30,
-            'url': 'https://www.soundjay.com/misc/sounds/bell-ringing-03.wav',
-            'preview_url': 'https://www.soundjay.com/misc/sounds/bell-ringing-03.wav',
+            'url': 'https://www.bensound.com/bensound-music/bensound-energy.mp3',
+            'preview_url': 'https://www.bensound.com/bensound-music/bensound-energy.mp3',
             'genre': 'Electronic'
         },
         {
@@ -293,8 +433,8 @@ def search_music():
             'name': 'Acoustic Guitar Melody',
             'artist': 'GuitarTracks',
             'duration': 30,
-            'url': 'https://www.soundjay.com/misc/sounds/bell-ringing-02.wav',
-            'preview_url': 'https://www.soundjay.com/misc/sounds/bell-ringing-02.wav',
+            'url': 'https://www.bensound.com/bensound-music/bensound-acoustic.mp3',
+            'preview_url': 'https://www.bensound.com/bensound-music/bensound-acoustic.mp3',
             'genre': 'Acoustic'
         },
         {
@@ -302,8 +442,8 @@ def search_music():
             'name': 'Hip Hop Instrumental',
             'artist': 'HipHopBeats',
             'duration': 30,
-            'url': 'https://www.soundjay.com/misc/sounds/bell-ringing-01.wav',
-            'preview_url': 'https://www.soundjay.com/misc/sounds/bell-ringing-01.wav',
+            'url': 'https://www.bensound.com/bensound-music/bensound-hip-hop.mp3',
+            'preview_url': 'https://www.bensound.com/bensound-music/bensound-hip-hop.mp3',
             'genre': 'Hip Hop'
         },
         {
@@ -311,9 +451,27 @@ def search_music():
             'name': 'Trending Pop Beat',
             'artist': 'PopMusic',
             'duration': 30,
-            'url': 'https://actions.google.com/sounds/v1/alarms/beep_short.ogg',
-            'preview_url': 'https://actions.google.com/sounds/v1/alarms/beep_short.ogg',
+            'url': 'https://www.bensound.com/bensound-music/bensound-sunny.mp3',
+            'preview_url': 'https://www.bensound.com/bensound-music/bensound-sunny.mp3',
             'genre': 'Pop'
+        },
+        {
+            'id': 7,
+            'name': 'Cinematic Epic',
+            'artist': 'CinemaBeats',
+            'duration': 30,
+            'url': 'https://www.bensound.com/bensound-music/bensound-epic.mp3',
+            'preview_url': 'https://www.bensound.com/bensound-music/bensound-epic.mp3',
+            'genre': 'Cinematic'
+        },
+        {
+            'id': 8,
+            'name': 'Funky Groove',
+            'artist': 'FunkMaster',
+            'duration': 30,
+            'url': 'https://www.bensound.com/bensound-music/bensound-funky.mp3',
+            'preview_url': 'https://www.bensound.com/bensound-music/bensound-funky.mp3',
+            'genre': 'Funk'
         }
     ]
     
